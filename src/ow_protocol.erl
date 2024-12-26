@@ -131,11 +131,6 @@ route(<<Prefix:16, Msg/binary>>, SessionPID) ->
             ok;
         {MsgModule, EncoderLib, Application} ->
             erlang:apply(MsgModule, decode, [Msg, SessionPID, EncoderLib, Application])
-        %#{app := Application, router := Router} ->
-        %    % Assume this app implements the ow_router behaviour
-        %    % Get the EncoderLib and Application
-        %    EncoderLib = list_to_existing_atom(atom_to_list(Application) ++ "_pb"),
-        %    erlang:apply(Router, decode, [Msg, SessionPID, EncoderLib, Application])
     end.
 
 %%-------------------------------------------------------------------------
@@ -159,9 +154,11 @@ init([]) ->
         s_rpc => #{},
         apps => []
     },
-    % Automatically register all apps
-    St1 = auto_register(St0),
-    {ok, St1}.
+    % Register overworld first
+    St1 = register_app(overworld, St0),
+    % Automatically register all remaining apps
+    St2 = auto_register(St1),
+    {ok, St2}.
 
 handle_call({register, AppConfig}, _From, St0) ->
     % Fold over the list of modules to register them
@@ -445,26 +442,27 @@ register_rpcs(#{app := App}, St0) ->
 auto_register(St0) ->
     % Get all loaded application modules and sort them alphabetically
     AllApps = lists:sort(application:loaded_applications()),
+    AppNames = [Name || {Name, _, _} <- AllApps],
     % For each app, attempt to register modules.
     % If registration is successful, register the app
-    F = fun({App, _Descr, _Vers}, State0) ->
-        {ok, Modules} = application:get_key(App, modules),
-        % For each module, attempt to register it with Overworld
-        State1 = lists:foldl(
-            fun(M, S) -> reg_rpc(M, S) end, State0, Modules
-        ),
-        if
-            State1 =/= State0 ->
-                % This app must have added some new modules, so register
-                AppConfig = get_overworld_config(App),
-                #{apps := RegApps0} = State1,
-                RegApps1 = reg_app(AppConfig, RegApps0),
-                State1#{apps => RegApps1};
-            true ->
-                State1
-        end
-    end,
-    lists:foldl(F, St0, AllApps).
+    lists:foldl(fun register_app/2, St0, AppNames).
+
+register_app(App, St0) ->
+    {ok, Modules} = application:get_key(App, modules),
+    % For each module, attempt to register it with Overworld
+    St1 = lists:foldl(
+        fun(M, S) -> reg_rpc(M, S) end, St0, Modules
+    ),
+    if
+        St1 =/= St0 ->
+            % This app must have added some new modules, so register
+            AppConfig = get_overworld_config(App),
+            #{apps := RegApps0} = St1,
+            RegApps1 = reg_app(AppConfig, RegApps0),
+            St1#{apps => RegApps1};
+        true ->
+            St1
+    end.
 
 -spec get_overworld_config(atom()) -> map().
 get_overworld_config(App) ->
